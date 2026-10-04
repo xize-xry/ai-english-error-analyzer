@@ -4,6 +4,7 @@ from ai_service import call_deepseek, parse_result
 
 
 def show_result(result):
+    print("\n==== AI错题分析 ====")
     print("错误类型：", result.get("error_type", "未知"))
     print("错误原因：", result.get("reason", "未知"))
     print("改进建议：", result.get("suggestion", "暂无建议"))
