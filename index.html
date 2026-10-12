@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>英语错题分析系统</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f3f6fb;
+      color: #233044;
+      font-family: "Microsoft YaHei", sans-serif;
+    }
+    main { max-width: 1100px; margin: auto; padding: 30px 20px; }
+    h1 { margin-bottom: 8px; }
+    .subtitle { color: #66758b; margin-bottom: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 20px;
+    }
+    h2 { font-size: 20px; margin-top: 0; }
+    label { display: block; margin: 14px 0 7px; }
+    input, textarea {
+      width: 100%;
+      padding: 11px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font: inherit;
+    }
+    textarea { min-height: 145px; resize: vertical; }
+    button {
+      background: #315ee8;
+      color: white;
+      border: 0;
+      border-radius: 8px;
+      padding: 11px 17px;
+      cursor: pointer;
+      font: inherit;
+      margin: 12px 8px 0 0;
+    }
+    button.secondary { background: #eaf0ff; color: #315ee8; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 24px; margin: 14px 0; }
+    .error { color: #b42318; }
+    .muted { color: #66758b; }
+    .tag {
+      display: inline-block;
+      background: #eaf0ff;
+      color: #315ee8;
+      border-radius: 6px;
+      padding: 5px 9px;
+    }
+    .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+    .record { border-top: 1px solid #e2e8f0; padding: 16px 0; }
+    .bar { background: #edf1f7; border-radius: 6px; overflow: hidden; height: 10px; }
+    .fill { background: #315ee8; height: 100%; }
+    .stat { margin: 17px 0; }
+    .stat-label { display: flex; justify-content: space-between; margin-bottom: 8px; }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>英语错题分析系统</h1>
+  <div class="subtitle">保存每次错题，查看学生累计错误分布</div>
+
+  <div class="card">
+    <label for="student">当前学生编号</label>
+    <input id="student" value="student_001" maxlength="64">
+    <button id="refresh" class="secondary">刷新历史与画像</button>
+    <div id="status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>录入错题</h2>
+      <form id="form">
+        <label for="question">题目 / 阅读原文与问题</label>
+        <textarea id="question" maxlength="20000" required
+          placeholder="阅读题请填写原文、问题和选项"></textarea>
+
+        <label for="studentAnswer">学生答案</label>
+        <input id="studentAnswer" maxlength="255" required>
+
+        <label for="correctAnswer">正确答案</label>
+        <input id="correctAnswer" maxlength="255" required>
+
+        <button id="submit" type="submit">分析并保存</button>
+        <button id="sample" type="button" class="secondary">填入示例</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>本次分析</h2>
+      <div id="analysis" class="muted">提交错题后显示分析结果。</div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>错误画像</h2>
+    <div id="profile" class="muted">点击刷新查看。</div>
+  </section>
+
+  <section class="card">
+  <h2>个性化学习建议</h2>
+  <div class="muted">结合累计错误分布与最近错题生成训练建议。</div>
+  <button id="adviceButton" type="button">生成学习建议</button>
+  <div id="advice" class="text">点击按钮后生成。</div>
+  </section>
+
+  <section class="card">
+    <h2>历史错题</h2>
+    <div class="muted">展示当前学生最近 20 条记录。</div>
+    <div id="history"></div>
+  </section>
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let busy = false;
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function studentId() {
+    const id = $("student").value.trim();
+    if (!id) throw new Error("请填写学生编号");
+    return id;
+  }
+
+  function status(message, isError = false) {
+    $("status").textContent = message;
+    $("status").className = isError ? "error" : "muted";
+  }
+
+  function setBusy(value) {
+    busy = value;
+    ["student", "refresh", "submit", "sample", "adviceButton"].forEach(id => {
+      $(id).disabled = value;
+    });
+    $("submit").textContent = value ? "处理中…" : "分析并保存";
+  }
+
+  async function request(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok) {
+      const detail = Array.isArray(data.detail)
+        ? data.detail.map(item => item.msg).join("；")
+        : data.detail;
+      throw new Error(detail || "请求失败");
+    }
+    return data;
+  }
+
+  function renderAnalysis(data) {
+    const box = $("analysis");
+    box.replaceChildren();
+    box.className = "";
+    box.append(
+      element("div", data.error_type, "tag"),
+      element("h3", "错误原因"),
+      element("div", data.reason, "text"),
+      element("h3", "学习建议"),
+      element("div", data.suggestion, "text")
+    );
+  }
+
+  function renderProfile(data) {
+    const box = $("profile");
+    box.replaceChildren();
+    box.className = "";
+    box.append(element(
+      "p", `学生：${data.student_id} · 累计错题：${data.total_questions}`
+    ));
+
+    if (!data.total_questions) {
+      box.append(element("p", "暂无错题，先录入一道。", "muted"));
+      return;
+    }
+
+    data.error_stats.forEach(item => {
+      const row = element("div", undefined, "stat");
+      const label = element("div", undefined, "stat-label");
+      label.append(
+        element("span", item.error_type || "未分类"),
+        element("span", `${item.count} 次 · ${item.percentage}%`)
+      );
+      const bar = element("div", undefined, "bar");
+      const fill = element("div", undefined, "fill");
+      fill.style.width = `${item.percentage}%`;
+      bar.append(fill);
+      row.append(label, bar);
+      box.append(row);
+    });
+
+    box.append(element(
+      "p", "占比基于已保存的错题记录；样本较少时，不能据此判断稳定的学习弱点。",
+      "muted"
+    ));
+  }
+
+  function renderHistory(data) {
+    const box = $("history");
+    box.replaceChildren();
+    if (!data.data.length) {
+      box.append(element("p", "当前学生暂无记录。", "muted"));
+      return;
+    }
+
+    data.data.forEach(item => {
+      const record = element("div", undefined, "record");
+      record.append(
+        element("div", `#${item.id} · ${item.error_type || "未分类"}`, "tag"),
+        element("p", item.question, "text"),
+        element("p", `学生答案：${item.student_answer}`, "text"),
+        element("p", `正确答案：${item.correct_answer}`, "text"),
+        element("p", `错因：${item.reason || "暂无"}`, "text"),
+        element("p", `建议：${item.suggestion || "暂无"}`, "text")
+      );
+      box.append(record);
+    });
+  }
+
+  async function loadStudent(id) {
+    const query = encodeURIComponent(id);
+    const [profile, history] = await Promise.all([
+      request(`/profile?student_id=${query}`),
+      request(`/history?student_id=${query}&limit=20`)
+    ]);
+    renderProfile(profile);
+    renderHistory(history);
+  }
+
+  // 切换编号后清空旧内容，避免把上一位学生的数据误认为当前学生的数据。
+  $("student").addEventListener("input", () => {
+    $("advice").textContent = "点击按钮后生成当前学生的学习建议。";
+    $("analysis").replaceChildren(element("p", "提交错题后显示分析结果。", "muted"));
+    $("profile").replaceChildren(element("p", "点击刷新查看当前学生画像。", "muted"));
+    $("history").replaceChildren();
+    status("");
+  });
+
+  $("refresh").addEventListener("click", async () => {
+    if (busy) return;
+    try {
+      const id = studentId();
+      setBusy(true);
+      status("正在读取历史和画像…");
+      await loadStudent(id);
+      status("已更新");
+    } catch (error) {
+      status(error.message, true);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $("sample").addEventListener("click", () => {
+    $("question").value =
+      "选择正确形式：The classroom ___ every day. A. cleans B. is cleaned";
+    $("studentAnswer").value = "A. cleans";
+    $("correctAnswer").value = "B. is cleaned";
+  });
+
+  $("form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (busy) return;
+    let saved = false;
+
+    try {
+      const id = studentId();
+      const payload = {
+        student_id: id,
+        question: $("question").value.trim(),
+        student_answer: $("studentAnswer").value.trim(),
+        correct_answer: $("correctAnswer").value.trim()
+      };
+      if (!payload.question || !payload.student_answer || !payload.correct_answer) {
+        throw new Error("题目、学生答案和正确答案都不能为空");
+      }
+
+      setBusy(true);
+      status("AI正在分析，请稍候…");
+      $("analysis").replaceChildren(element("p", "正在分析…", "muted"));
+
+      const result = await request("/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      saved = true;
+      renderAnalysis(result);
+      await loadStudent(id);
+      status(`分析完成，已保存为记录 #${result.id}`);
+    } catch (error) {
+      status(
+        saved
+          ? `错题已保存，但刷新失败：${error.message}。请点击刷新，无需重复提交。`
+          : error.message,
+        true
+      );
+      if (!saved) {
+        $("analysis").replaceChildren(element("p", "本次分析未完成，请查看上方提示。", "muted"));
+      }
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  $("adviceButton").addEventListener("click", async () => {
+  if (busy) return;
+
+  try {
+    const id = studentId();
+    setBusy(true);
+    status("正在生成学习建议…");
+    $("advice").textContent = "正在分析累计错误分布…";
+
+    const data = await request(
+      `/learning-advice?student_id=${encodeURIComponent(id)}`,
+      { method: "POST" }
+    );
+
+    const box = $("advice");
+    box.replaceChildren();
+
+    box.append(
+      element(
+        "p",
+        `学生：${data.student_id}；累计 ${data.based_on_total} 条错题，参考最近 ${data.recent_sample_count} 条。`,
+        "muted"
+      ),
+      element("h3", "学习情况"),
+      element("p", data.summary),
+      element("h3", "优先复习方向")
+    );
+
+    const priorities = element("ul");
+    data.priorities.forEach(text => {
+      priorities.append(element("li", text));
+    });
+    box.append(priorities, element("h3", "训练任务"));
+
+    const actions = element("ol");
+    data.actions.forEach(text => {
+      actions.append(element("li", text));
+    });
+    box.append(actions);
+
+    status("学习建议已生成");
+  } catch (error) {
+    $("advice").textContent = "本次未生成建议。";
+    status(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+});
+</script>
+</body>
+</html>
